@@ -105,6 +105,10 @@ export default function Home() {
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  const [openMenuId, setOpenMenuId] = useState<number | null>(null);
+  const [openMedMenu, setOpenMedMenu] = useState<string | null>(null);
+  const [deleteMedName, setDeleteMedName] = useState<string | null>(null);
+
   const [meds, setMeds] = useState<Med[]>([]);
   const [newName, setNewName] = useState("");
   const [newSlots, setNewSlots] = useState<Slot[]>([]);
@@ -692,7 +696,7 @@ export default function Home() {
               </section>
             )}
 
-            {/* clamp records — horizontally scrollable on mobile, full width card */}
+            {/* clamp records — stacked cards, fully responsive on all screen sizes */}
             <section className={cardCls}>
               <div className="mb-3 flex items-center justify-between">
                 <p className="text-xs font-semibold uppercase tracking-wider text-[#5b6f6b]">
@@ -708,80 +712,68 @@ export default function Home() {
                   এখনো কোনো ক্ল্যাম্প নেই। শুরু করতে উপরে ক্ল্যাম্প শুরু করুন।
                 </p>
               ) : (
-                /*
-                  The table is wider than mobile screens — we let it scroll
-                  horizontally inside the card using overflow-x-auto.
-                  -mx-4 + px-4 trick lets the scrollable area bleed to card edges
-                  without clipping the card's border-radius visually.
-                */
-                <div className="overflow-x-auto -mx-4 px-4">
-                  <table className="w-full min-w-[500px] border-collapse text-left text-xs">
-                    <thead>
-                      <tr className="text-[10px] uppercase tracking-wide text-[#5b6f6b]">
-                        <th className="pb-2 pr-3 font-semibold">ক্ল্যাম্প সময়</th>
-                        <th className="pb-2 pr-3 font-semibold">খোলার সময়</th>
-                        <th className="pb-2 pr-3 font-semibold">সময়কাল</th>
-                        <th className="pb-2 pr-3 font-semibold">টের পেয়েছে</th>
-                        <th className="pb-2 pr-3 font-semibold">প্রস্রাব</th>
-                        <th className="pb-2 font-semibold text-right">অ্যাকশন</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sessions.map((s) => {
-                        const dur = durationMin(s.clamp_time, s.release_time);
-                        return (
-                          <tr
-                            key={s.id}
-                            className="border-t border-[#e2e9e6] align-top"
+                <div className="flex flex-col gap-2">
+                  {sessions.map((s) => {
+                    const dur = durationMin(s.clamp_time, s.release_time);
+                    return (
+                      <div
+                        key={s.id}
+                        className="rounded-xl border border-[#e2e9e6] bg-[#f9fbfa] p-3"
+                      >
+                        {/* row 1: clamp → release times */}
+                        <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                          <span className="font-semibold text-[#0a3f35]">
+                            {fmtTime(s.clamp_time)}
+                          </span>
+                          <span className="text-[#b6c2bd]">→</span>
+                          <span className="text-[#5b6f6b]">
+                            {fmtTime(s.release_time)}
+                          </span>
+                          {dur !== null && (
+                            <span className="rounded-full bg-[#d9efe7] px-2 py-0.5 text-[10px] font-semibold text-[#0a3f35]">
+                              {dur} মি
+                            </span>
+                          )}
+                        </div>
+
+                        {/* row 2: detected + urine badges */}
+                        <div className="mb-2.5 flex flex-wrap gap-2">
+                          {s.detected ? (
+                            <span
+                              className={`rounded-md px-2 py-0.5 text-[11px] font-bold ${
+                                s.detected === "Yes"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-orange-100 text-orange-800"
+                              }`}
+                            >
+                              {s.detected === "Yes" ? "টের পেয়েছেন ✓" : "টের পাননি"}
+                            </span>
+                          ) : null}
+                          {s.urine_ml != null ? (
+                            <span className="rounded-md bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-800">
+                              {s.urine_ml} মিলি
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {/* row 3: action buttons */}
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => openEdit(s)}
+                            className="flex-1 rounded-lg border border-[#e2e9e6] bg-white py-2 text-xs font-semibold text-[#0e5e4e] transition active:scale-[0.97]"
                           >
-                            <td className="whitespace-nowrap py-2 pr-3">
-                              {fmtTime(s.clamp_time)}
-                            </td>
-                            <td className="whitespace-nowrap py-2 pr-3">
-                              {fmtTime(s.release_time)}
-                            </td>
-                            <td className="whitespace-nowrap py-2 pr-3">
-                              {dur === null ? "—" : `${dur} মি`}
-                            </td>
-                            <td className="py-2 pr-3">
-                              {s.detected ? (
-                                <span
-                                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
-                                    s.detected === "Yes"
-                                      ? "bg-emerald-100 text-emerald-800"
-                                      : "bg-orange-100 text-orange-800"
-                                  }`}
-                                >
-                                  {s.detected === "Yes" ? "হ্যাঁ" : "না"}
-                                </span>
-                              ) : (
-                                "—"
-                              )}
-                            </td>
-                            <td className="whitespace-nowrap py-2 pr-3 font-semibold">
-                              {s.urine_ml != null ? `${s.urine_ml} মিলি` : "—"}
-                            </td>
-                            <td className="whitespace-nowrap py-2">
-                              <div className="flex justify-end gap-1.5">
-                                <button
-                                  onClick={() => openEdit(s)}
-                                  className="rounded-lg border border-[#e2e9e6] bg-white px-2 py-1 text-[11px] font-semibold text-[#0e5e4e] transition hover:bg-[#d9efe7] active:scale-[0.97]"
-                                >
-                                  সম্পাদনা
-                                </button>
-                                <button
-                                  onClick={() => setDeleteId(s.id)}
-                                  className="rounded-lg border border-red-200 bg-white px-2 py-1 text-[11px] font-semibold text-red-600 transition hover:bg-red-50 active:scale-[0.97]"
-                                >
-                                  মুছুন
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                            সম্পাদনা
+                          </button>
+                          <button
+                            onClick={() => setDeleteId(s.id)}
+                            className="flex-1 rounded-lg border border-red-200 bg-white py-2 text-xs font-semibold text-red-600 transition active:scale-[0.97]"
+                          >
+                            মুছুন
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </section>
