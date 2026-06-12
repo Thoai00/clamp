@@ -19,7 +19,6 @@ type ClampSession = {
 const SLOTS: Slot[] = ["Morning", "Afternoon", "Night"];
 const MEALS: Meal[] = ["Before eat", "After eat"];
 
-// Bangla display labels (data stays in English in the database)
 const SLOT_BN: Record<Slot, string> = {
   Morning: "সকাল",
   Afternoon: "দুপুর",
@@ -49,6 +48,7 @@ function fmtTime(iso: string | null) {
     month: "short",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: true,
   });
 }
 
@@ -61,6 +61,19 @@ function isToday(iso: string) {
   return new Date(iso).toDateString() === new Date().toDateString();
 }
 
+function localInputToISO(val: string) {
+  if (!val) return null;
+  return new Date(val).toISOString();
+}
+
+function isoToLocalInput(iso: string | null) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export default function Home() {
   const [tab, setTab] = useState<"clamp" | "medicine">("clamp");
   const [now, setNow] = useState(Date.now());
@@ -68,7 +81,6 @@ export default function Home() {
   const [syncing, setSyncing] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // clamp state
   const [sessions, setSessions] = useState<ClampSession[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [clampStart, setClampStart] = useState<string | null>(null);
@@ -76,7 +88,23 @@ export default function Home() {
   const [releaseTime, setReleaseTime] = useState<string | null>(null);
   const [urineMl, setUrineMl] = useState("");
 
-  // medicine state
+  const [showManual, setShowManual] = useState(false);
+  const [manualClampTime, setManualClampTime] = useState("");
+  const [manualReleaseTime, setManualReleaseTime] = useState("");
+  const [manualDetected, setManualDetected] = useState<"Yes" | "No" | "">("");
+  const [manualUrineMl, setManualUrineMl] = useState("");
+  const [manualSaving, setManualSaving] = useState(false);
+
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editClampTime, setEditClampTime] = useState("");
+  const [editReleaseTime, setEditReleaseTime] = useState("");
+  const [editDetected, setEditDetected] = useState<"Yes" | "No" | "">("");
+  const [editUrineMl, setEditUrineMl] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   const [meds, setMeds] = useState<Med[]>([]);
   const [newName, setNewName] = useState("");
   const [newSlots, setNewSlots] = useState<Slot[]>([]);
@@ -100,13 +128,17 @@ export default function Home() {
     fetchMeds();
   }, []);
 
+  useEffect(() => {
+    if (showManual && !manualClampTime) {
+      setManualClampTime(isoToLocalInput(new Date().toISOString()));
+    }
+  }, [showManual]);
+
   function showToast(msg: string, err = false) {
     clearTimeout(toastTimer.current);
     setToast({ msg, err });
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }
-
-  /* ---------- data ---------- */
 
   async function fetchSessions() {
     try {
@@ -140,8 +172,6 @@ export default function Home() {
       showToast("ওষুধ লোড করা যায়নি", true);
     }
   }
-
-  /* ---------- clamp actions ---------- */
 
   async function startClamp() {
     const t = new Date().toISOString();
@@ -221,7 +251,123 @@ export default function Home() {
     }
   }
 
-  /* ---------- medicine actions ---------- */
+  async function saveManualEntry() {
+    if (!manualClampTime) return showToast("ক্ল্যাম্পের সময় দিন", true);
+    const clampISO = localInputToISO(manualClampTime);
+    const releaseISO = manualReleaseTime ? localInputToISO(manualReleaseTime) : null;
+
+    if (releaseISO && clampISO && new Date(releaseISO) <= new Date(clampISO)) {
+      return showToast("খোলার সময় ক্ল্যাম্পের সময়ের পরে হতে হবে", true);
+    }
+
+    setManualSaving(true);
+    try {
+      const res1 = await fetch("/api/clamp", { method: "POST" });
+      const j1 = await res1.json();
+      if (!j1.ok) throw new Error(j1.error);
+      const newId = j1.id;
+
+      await fetch("/api/clamp", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: newId, clamp_time: clampISO }),
+      });
+
+      if (releaseISO) {
+        await fetch("/api/clamp", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: newId,
+            release_time: releaseISO,
+            detected: manualDetected || null,
+            urine_ml: manualUrineMl || null,
+          }),
+        });
+      }
+
+      setManualClampTime("");
+      setManualReleaseTime("");
+      setManualDetected("");
+      setManualUrineMl("");
+      setShowManual(false);
+      await fetchSessions();
+      showToast("ম্যানুয়াল এন্ট্রি সংরক্ষণ হয়েছে ✓");
+    } catch (err) {
+      showToast("সংরক্ষণ হয়নি: " + String(err), true);
+    } finally {
+      setManualSaving(false);
+    }
+  }
+
+  function openEdit(s: ClampSession) {
+    setEditingId(s.id);
+    setEditClampTime(isoToLocalInput(s.clamp_time));
+    setEditReleaseTime(isoToLocalInput(s.release_time));
+    setEditDetected((s.detected as "Yes" | "No" | "") || "");
+    setEditUrineMl(s.urine_ml != null ? String(s.urine_ml) : "");
+  }
+
+  function closeEdit() {
+    setEditingId(null);
+    setEditClampTime("");
+    setEditReleaseTime("");
+    setEditDetected("");
+    setEditUrineMl("");
+  }
+
+  async function saveEditEntry() {
+    if (!editingId) return;
+    if (!editClampTime) return showToast("ক্ল্যাম্পের সময় দিন", true);
+
+    const clampISO = localInputToISO(editClampTime);
+    const releaseISO = editReleaseTime ? localInputToISO(editReleaseTime) : null;
+
+    if (releaseISO && clampISO && new Date(releaseISO) <= new Date(clampISO)) {
+      return showToast("খোলার সময় ক্ল্যাম্পের সময়ের পরে হতে হবে", true);
+    }
+
+    setEditSaving(true);
+    try {
+      const res = await fetch("/api/clamp", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editingId,
+          clamp_time: clampISO,
+          release_time: releaseISO,
+          detected: editDetected || null,
+          urine_ml: editUrineMl === "" ? null : editUrineMl,
+        }),
+      });
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.error);
+      closeEdit();
+      await fetchSessions();
+      showToast("রেকর্ড আপডেট হয়েছে ✓");
+    } catch (err) {
+      showToast("আপডেট হয়নি: " + String(err), true);
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteId) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/clamp?id=${deleteId}`, { method: "DELETE" });
+      const j = await res.json();
+      if (!j.ok) throw new Error(j.error);
+      setDeleteId(null);
+      await fetchSessions();
+      showToast("রেকর্ড মুছে ফেলা হয়েছে ✓");
+    } catch (err) {
+      showToast("মুছতে ব্যর্থ: " + String(err), true);
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   function toggleNewSlot(s: Slot) {
     setNewSlots((p) => (p.includes(s) ? p.filter((x) => x !== s) : [...p, s]));
@@ -265,8 +411,6 @@ export default function Home() {
     }
   }
 
-  /* ---------- derived ---------- */
-
   const clampElapsed = clampStart ? now - new Date(clampStart).getTime() : 0;
 
   const todaySessions = useMemo(
@@ -296,37 +440,51 @@ export default function Home() {
         : "border-[#e2e9e6] bg-white text-[#5b6f6b]"
     }`;
 
+  const inputCls =
+    "w-full rounded-xl border border-[#e2e9e6] bg-[#f3f6f4] p-3 text-sm outline-none focus:ring-2 focus:ring-[#0e5e4e]";
+
+  // Unified card style — used for every card so they all match perfectly
+  const cardCls = "rounded-2xl border border-[#e2e9e6] bg-white p-4";
+
   return (
     <main className="min-h-screen bg-[#f3f6f4] text-[#122b27] font-sans">
-      <div className="mx-auto max-w-3xl px-4 pb-24 pt-4">
+      {/*
+        KEY FIX: Single wrapper with consistent px-4 on all screen sizes.
+        No asymmetric sm: overrides that were causing the misalignment.
+        max-w-lg centers on tablet/desktop while filling mobile edge-to-edge minus 16px each side.
+      */}
+      <div className="mx-auto w-full max-w-lg px-4 pb-24 pt-4">
+
         {/* top bar */}
         <div className="flex items-center justify-between py-3">
-          <div className="text-xl font-extrabold tracking-tight text-[#0a3f35]">
+          <div className="text-lg font-extrabold tracking-tight text-[#0a3f35]">
             Clamp<span className="text-[#e8743b]">Care</span>
           </div>
-          <div className="rounded-full border border-[#e2e9e6] bg-white px-3 py-1.5 text-sm text-[#5b6f6b]">
+          <div className="rounded-full border border-[#e2e9e6] bg-white px-3 py-1 text-xs text-[#5b6f6b]">
             {dateChip}
           </div>
         </div>
 
         {/* patient card */}
-        <div className="mb-4 flex items-center gap-4 rounded-2xl border border-[#e2e9e6] bg-white p-4">
-          <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-[#d9efe7] text-xl font-extrabold text-[#0a3f35]">
+        <div className={`mb-3 flex items-center gap-3 ${cardCls}`}>
+          <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-[#d9efe7] text-base font-extrabold text-[#0a3f35]">
             PC
           </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">{PATIENT.name}</h1>
-            <p className="mt-0.5 text-sm text-[#5b6f6b]">
+          <div className="min-w-0">
+            <h1 className="truncate text-base font-bold tracking-tight">
+              {PATIENT.name}
+            </h1>
+            <p className="mt-0.5 text-xs text-[#5b6f6b]">
               {PATIENT.age} বছর · ক্যাথেটার ক্ল্যাম্প ট্রেনিং
             </p>
           </div>
         </div>
 
         {/* tabs */}
-        <div className="mb-4 grid grid-cols-2 gap-2 rounded-2xl border border-[#e2e9e6] bg-white p-1.5">
+        <div className="mb-3 grid grid-cols-2 gap-1.5 rounded-2xl border border-[#e2e9e6] bg-white p-1">
           <button
             onClick={() => setTab("clamp")}
-            className={`rounded-xl py-2.5 text-sm font-semibold transition ${
+            className={`rounded-xl py-2 text-sm font-semibold transition ${
               tab === "clamp" ? "bg-[#0e5e4e] text-white" : "text-[#5b6f6b]"
             }`}
           >
@@ -334,7 +492,7 @@ export default function Home() {
           </button>
           <button
             onClick={() => setTab("medicine")}
-            className={`rounded-xl py-2.5 text-sm font-semibold transition ${
+            className={`rounded-xl py-2 text-sm font-semibold transition ${
               tab === "medicine" ? "bg-[#0e5e4e] text-white" : "text-[#5b6f6b]"
             }`}
           >
@@ -344,10 +502,11 @@ export default function Home() {
 
         {/* ================= CLAMP TAB ================= */}
         {tab === "clamp" && (
-          <div className="grid gap-4">
-            {/* timer */}
+          <div className="grid gap-3">
+
+            {/* timer card */}
             <section
-              className={`rounded-3xl border p-5 transition-colors duration-300 ${
+              className={`rounded-2xl border p-4 transition-colors duration-300 ${
                 activeId
                   ? "border-[#0a3f35] bg-[#0a3f35] text-[#eafff7]"
                   : "border-[#e2e9e6] bg-white"
@@ -355,19 +514,19 @@ export default function Home() {
             >
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider">
                 <span
-                  className={`h-2.5 w-2.5 rounded-full ${
+                  className={`h-2 w-2 rounded-full ${
                     activeId ? "animate-pulse bg-[#4be3ad]" : "bg-[#5b6f6b]"
                   }`}
                 />
                 {activeId ? "ক্ল্যাম্প চালু আছে" : "ক্ল্যাম্প খোলা আছে"}
               </div>
 
-              <div className="my-2 text-6xl font-extrabold tabular-nums tracking-tight sm:text-7xl">
+              <div className="my-2 text-5xl font-extrabold tabular-nums tracking-tight">
                 {activeId ? fmtClock(clampElapsed) : "00:00:00"}
               </div>
 
               <div
-                className={`text-sm ${
+                className={`text-xs ${
                   activeId ? "text-[#9fd8c6]" : "text-[#5b6f6b]"
                 }`}
               >
@@ -381,23 +540,23 @@ export default function Home() {
               {activeId ? (
                 <button
                   onClick={undoClamp}
-                  className="mt-4 w-full rounded-2xl bg-[#e8743b] py-4 text-base font-semibold text-white transition active:scale-[0.98]"
+                  className="mt-4 w-full rounded-2xl bg-[#e8743b] py-3.5 text-sm font-semibold text-white transition active:scale-[0.98]"
                 >
                   ক্ল্যাম্প খুলুন (এখন খুলে দিন)
                 </button>
               ) : !pendingId ? (
                 <button
                   onClick={startClamp}
-                  className="mt-4 w-full rounded-2xl bg-[#0e5e4e] py-4 text-base font-semibold text-white transition active:scale-[0.98]"
+                  className="mt-4 w-full rounded-2xl bg-[#0e5e4e] py-3.5 text-sm font-semibold text-white transition active:scale-[0.98]"
                 >
                   ক্ল্যাম্প শুরু করুন
                 </button>
               ) : null}
 
-              {/* pee panel with urine ml */}
+              {/* pee panel */}
               {pendingId && (
-                <div className="mt-4 rounded-2xl border border-dashed border-[#e8743b] bg-[#fdeee4] p-4">
-                  <p className="mb-3 text-sm font-semibold text-[#122b27]">
+                <div className="mt-4 rounded-2xl border border-dashed border-[#e8743b] bg-[#fdeee4] p-3">
+                  <p className="mb-2 text-sm font-semibold text-[#122b27]">
                     প্রস্রাবের পরিমাণ (মিলি)
                   </p>
                   <input
@@ -406,21 +565,21 @@ export default function Home() {
                     value={urineMl}
                     onChange={(e) => setUrineMl(e.target.value)}
                     placeholder="যেমন ২৫০"
-                    className="mb-3 w-full rounded-xl border border-[#e2e9e6] bg-white p-3.5 text-base outline-none focus:ring-2 focus:ring-[#0e5e4e]"
+                    className="mb-3 w-full rounded-xl border border-[#e2e9e6] bg-white p-3 text-sm outline-none focus:ring-2 focus:ring-[#0e5e4e]"
                   />
                   <p className="mb-2 text-sm font-semibold text-[#122b27]">
-                    রোগী কি বুঝতে পেরেছেন (প্রস্রাবের চাপ টের পেয়েছেন)?
+                    রোগী কি প্রস্রাবের চাপ টের পেয়েছেন?
                   </p>
-                  <div className="grid grid-cols-2 gap-2.5">
+                  <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={() => logPee(true)}
-                      className="rounded-xl bg-[#0e5e4e] py-3.5 text-sm font-semibold text-white transition active:scale-[0.98]"
+                      className="rounded-xl bg-[#0e5e4e] py-3 text-sm font-semibold text-white transition active:scale-[0.98]"
                     >
                       হ্যাঁ, টের পেয়েছেন
                     </button>
                     <button
                       onClick={() => logPee(false)}
-                      className="rounded-xl bg-[#d9efe7] py-3.5 text-sm font-semibold text-[#0a3f35] transition active:scale-[0.98]"
+                      className="rounded-xl bg-[#d9efe7] py-3 text-sm font-semibold text-[#0a3f35] transition active:scale-[0.98]"
                     >
                       না, টের পাননি
                     </button>
@@ -430,19 +589,111 @@ export default function Home() {
             </section>
 
             {/* today summary */}
-            <div className="grid grid-cols-2 gap-2.5">
-              <div className="rounded-2xl border border-[#e2e9e6] bg-white p-3 text-center">
+            <div className="grid grid-cols-2 gap-3">
+              <div className={`${cardCls} text-center`}>
                 <b className="block text-2xl font-bold">{todaySessions.length}</b>
                 <span className="text-[11px] text-[#5b6f6b]">আজকের ক্ল্যাম্প</span>
               </div>
-              <div className="rounded-2xl border border-[#e2e9e6] bg-white p-3 text-center">
+              <div className={`${cardCls} text-center`}>
                 <b className="block text-2xl font-bold">{todayMl} মিলি</b>
                 <span className="text-[11px] text-[#5b6f6b]">আজকের প্রস্রাব</span>
               </div>
             </div>
 
-            {/* clamp table */}
-            <section className="rounded-2xl border border-[#e2e9e6] bg-white p-4">
+            {/* manual entry toggle */}
+            <button
+              onClick={() => setShowManual((v) => !v)}
+              className="flex w-full items-center justify-between rounded-2xl border border-dashed border-[#0e5e4e] bg-white px-4 py-3 text-sm font-semibold text-[#0e5e4e] transition hover:bg-[#d9efe7]"
+            >
+              <span>✏️ ম্যানুয়ালি ডেটা যোগ করুন</span>
+              <span className="text-lg">{showManual ? "−" : "+"}</span>
+            </button>
+
+            {/* manual entry form */}
+            {showManual && (
+              <section className={cardCls}>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[#5b6f6b]">
+                  ম্যানুয়াল এন্ট্রি
+                </p>
+                <div className="grid gap-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-[#5b6f6b]">
+                      ক্ল্যাম্পের সময় *
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={manualClampTime}
+                      onChange={(e) => setManualClampTime(e.target.value)}
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-[#5b6f6b]">
+                      খোলার সময় (ঐচ্ছিক)
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={manualReleaseTime}
+                      onChange={(e) => setManualReleaseTime(e.target.value)}
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-[#5b6f6b]">
+                      প্রস্রাবের পরিমাণ (মিলি, ঐচ্ছিক)
+                    </label>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={manualUrineMl}
+                      onChange={(e) => setManualUrineMl(e.target.value)}
+                      placeholder="যেমন ২৫০"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold text-[#5b6f6b]">
+                      প্রস্রাবের চাপ টের পেয়েছেন? (ঐচ্ছিক)
+                    </label>
+                    <div className="flex gap-2">
+                      {(["Yes", "No", ""] as const).map((v) => (
+                        <button
+                          key={v === "" ? "skip" : v}
+                          onClick={() => setManualDetected(v)}
+                          className={chip(manualDetected === v)}
+                        >
+                          {v === "Yes" ? "হ্যাঁ" : v === "No" ? "না" : "উল্লেখ নেই"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => {
+                        setShowManual(false);
+                        setManualClampTime("");
+                        setManualReleaseTime("");
+                        setManualDetected("");
+                        setManualUrineMl("");
+                      }}
+                      className="rounded-xl border border-[#e2e9e6] py-3 text-sm font-semibold text-[#5b6f6b] transition active:scale-[0.98]"
+                    >
+                      বাতিল
+                    </button>
+                    <button
+                      onClick={saveManualEntry}
+                      disabled={manualSaving}
+                      className="rounded-xl bg-[#0e5e4e] py-3 text-sm font-semibold text-white transition active:scale-[0.98] disabled:opacity-60"
+                    >
+                      {manualSaving ? "সংরক্ষণ হচ্ছে…" : "সংরক্ষণ করুন"}
+                    </button>
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {/* clamp records — horizontally scrollable on mobile, full width card */}
+            <section className={cardCls}>
               <div className="mb-3 flex items-center justify-between">
                 <p className="text-xs font-semibold uppercase tracking-wider text-[#5b6f6b]">
                   ক্ল্যাম্পের রেকর্ড
@@ -457,15 +708,22 @@ export default function Home() {
                   এখনো কোনো ক্ল্যাম্প নেই। শুরু করতে উপরে ক্ল্যাম্প শুরু করুন।
                 </p>
               ) : (
-                <div className="-mx-1 overflow-x-auto">
-                  <table className="w-full border-collapse text-left text-sm">
+                /*
+                  The table is wider than mobile screens — we let it scroll
+                  horizontally inside the card using overflow-x-auto.
+                  -mx-4 + px-4 trick lets the scrollable area bleed to card edges
+                  without clipping the card's border-radius visually.
+                */
+                <div className="overflow-x-auto -mx-4 px-4">
+                  <table className="w-full min-w-[500px] border-collapse text-left text-xs">
                     <thead>
-                      <tr className="text-[11px] uppercase tracking-wide text-[#5b6f6b]">
-                        <th className="px-2 py-2 font-semibold">ক্ল্যাম্প সময়</th>
-                        <th className="px-2 py-2 font-semibold">খোলার সময়</th>
-                        <th className="px-2 py-2 font-semibold">সময়কাল</th>
-                        <th className="px-2 py-2 font-semibold">টের পেয়েছে</th>
-                        <th className="px-2 py-2 font-semibold">প্রস্রাব</th>
+                      <tr className="text-[10px] uppercase tracking-wide text-[#5b6f6b]">
+                        <th className="pb-2 pr-3 font-semibold">ক্ল্যাম্প সময়</th>
+                        <th className="pb-2 pr-3 font-semibold">খোলার সময়</th>
+                        <th className="pb-2 pr-3 font-semibold">সময়কাল</th>
+                        <th className="pb-2 pr-3 font-semibold">টের পেয়েছে</th>
+                        <th className="pb-2 pr-3 font-semibold">প্রস্রাব</th>
+                        <th className="pb-2 font-semibold text-right">অ্যাকশন</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -476,19 +734,19 @@ export default function Home() {
                             key={s.id}
                             className="border-t border-[#e2e9e6] align-top"
                           >
-                            <td className="whitespace-nowrap px-2 py-2.5">
+                            <td className="whitespace-nowrap py-2 pr-3">
                               {fmtTime(s.clamp_time)}
                             </td>
-                            <td className="whitespace-nowrap px-2 py-2.5">
+                            <td className="whitespace-nowrap py-2 pr-3">
                               {fmtTime(s.release_time)}
                             </td>
-                            <td className="whitespace-nowrap px-2 py-2.5">
+                            <td className="whitespace-nowrap py-2 pr-3">
                               {dur === null ? "—" : `${dur} মি`}
                             </td>
-                            <td className="px-2 py-2.5">
+                            <td className="py-2 pr-3">
                               {s.detected ? (
                                 <span
-                                  className={`rounded-md px-2 py-0.5 text-xs font-bold ${
+                                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
                                     s.detected === "Yes"
                                       ? "bg-emerald-100 text-emerald-800"
                                       : "bg-orange-100 text-orange-800"
@@ -500,8 +758,24 @@ export default function Home() {
                                 "—"
                               )}
                             </td>
-                            <td className="whitespace-nowrap px-2 py-2.5 font-semibold">
+                            <td className="whitespace-nowrap py-2 pr-3 font-semibold">
                               {s.urine_ml != null ? `${s.urine_ml} মিলি` : "—"}
+                            </td>
+                            <td className="whitespace-nowrap py-2">
+                              <div className="flex justify-end gap-1.5">
+                                <button
+                                  onClick={() => openEdit(s)}
+                                  className="rounded-lg border border-[#e2e9e6] bg-white px-2 py-1 text-[11px] font-semibold text-[#0e5e4e] transition hover:bg-[#d9efe7] active:scale-[0.97]"
+                                >
+                                  সম্পাদনা
+                                </button>
+                                <button
+                                  onClick={() => setDeleteId(s.id)}
+                                  className="rounded-lg border border-red-200 bg-white px-2 py-1 text-[11px] font-semibold text-red-600 transition hover:bg-red-50 active:scale-[0.97]"
+                                >
+                                  মুছুন
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -516,9 +790,9 @@ export default function Home() {
 
         {/* ================= MEDICINE TAB ================= */}
         {tab === "medicine" && (
-          <div className="grid gap-4">
+          <div className="grid gap-3">
             {/* add medicine */}
-            <section className="rounded-2xl border border-[#e2e9e6] bg-white p-4">
+            <section className={cardCls}>
               <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[#5b6f6b]">
                 ওষুধ যোগ করুন
               </p>
@@ -527,7 +801,7 @@ export default function Home() {
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   placeholder="ওষুধের নাম যেমন Tamsol 0.4"
-                  className="rounded-xl border border-[#e2e9e6] bg-[#f3f6f4] p-3.5 text-base outline-none focus:ring-2 focus:ring-[#0e5e4e]"
+                  className={inputCls}
                 />
                 <div>
                   <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#5b6f6b]">
@@ -563,7 +837,7 @@ export default function Home() {
                 </div>
                 <button
                   onClick={addMed}
-                  className="rounded-xl bg-[#0e5e4e] py-3.5 text-sm font-semibold text-white transition active:scale-[0.98]"
+                  className="rounded-xl bg-[#0e5e4e] py-3 text-sm font-semibold text-white transition active:scale-[0.98]"
                 >
                   ওষুধ সংরক্ষণ করুন
                 </button>
@@ -572,10 +846,7 @@ export default function Home() {
 
             {/* grouped schedule */}
             {SLOTS.map((slot) => (
-              <section
-                key={slot}
-                className="rounded-2xl border border-[#e2e9e6] bg-white p-4"
-              >
+              <section key={slot} className={cardCls}>
                 <p className="mb-3 text-sm font-bold text-[#0a3f35]">
                   {SLOT_BN[slot]}
                 </p>
@@ -594,7 +865,7 @@ export default function Home() {
                             {list.map((m) => (
                               <span
                                 key={m.name + slot + meal}
-                                className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium ${
+                                className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-sm font-medium ${
                                   meal === "Before eat"
                                     ? "bg-blue-50 text-blue-800"
                                     : "bg-[#d9efe7] text-[#0a3f35]"
@@ -621,6 +892,118 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* edit modal */}
+      {editingId !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-[#e2e9e6] bg-white p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-sm font-bold text-[#0a3f35]">রেকর্ড সম্পাদনা করুন</p>
+              <button
+                onClick={closeEdit}
+                className="rounded-lg px-2 py-1 text-lg font-bold text-[#5b6f6b] transition hover:bg-[#f3f6f4]"
+              >
+                ×
+              </button>
+            </div>
+            <div className="grid gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-[#5b6f6b]">
+                  ক্ল্যাম্পের সময় *
+                </label>
+                <input
+                  type="datetime-local"
+                  value={editClampTime}
+                  onChange={(e) => setEditClampTime(e.target.value)}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-[#5b6f6b]">
+                  খোলার সময় (ঐচ্ছিক)
+                </label>
+                <input
+                  type="datetime-local"
+                  value={editReleaseTime}
+                  onChange={(e) => setEditReleaseTime(e.target.value)}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-[#5b6f6b]">
+                  প্রস্রাবের পরিমাণ (মিলি, ঐচ্ছিক)
+                </label>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={editUrineMl}
+                  onChange={(e) => setEditUrineMl(e.target.value)}
+                  placeholder="যেমন ২৫০"
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-[#5b6f6b]">
+                  প্রস্রাবের চাপ টের পেয়েছেন? (ঐচ্ছিক)
+                </label>
+                <div className="flex gap-2">
+                  {(["Yes", "No", ""] as const).map((v) => (
+                    <button
+                      key={v === "" ? "skip" : v}
+                      onClick={() => setEditDetected(v)}
+                      className={chip(editDetected === v)}
+                    >
+                      {v === "Yes" ? "হ্যাঁ" : v === "No" ? "না" : "উল্লেখ নেই"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={closeEdit}
+                  className="rounded-xl border border-[#e2e9e6] py-3 text-sm font-semibold text-[#5b6f6b] transition active:scale-[0.98]"
+                >
+                  বাতিল
+                </button>
+                <button
+                  onClick={saveEditEntry}
+                  disabled={editSaving}
+                  className="rounded-xl bg-[#0e5e4e] py-3 text-sm font-semibold text-white transition active:scale-[0.98] disabled:opacity-60"
+                >
+                  {editSaving ? "সংরক্ষণ হচ্ছে…" : "সংরক্ষণ করুন"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* delete confirm modal */}
+      {deleteId !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-2xl border border-[#e2e9e6] bg-white p-4">
+            <p className="mb-1 text-sm font-bold text-[#0a3f35]">রেকর্ড মুছে ফেলবেন?</p>
+            <p className="mb-4 text-sm text-[#5b6f6b]">
+              এই রেকর্ডটি স্থায়ীভাবে মুছে যাবে। এই কাজটি ফিরিয়ে নেওয়া যাবে না।
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setDeleteId(null)}
+                className="rounded-xl border border-[#e2e9e6] py-3 text-sm font-semibold text-[#5b6f6b] transition active:scale-[0.98]"
+              >
+                বাতিল
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="rounded-xl bg-red-600 py-3 text-sm font-semibold text-white transition active:scale-[0.98] disabled:opacity-60"
+              >
+                {deleting ? "মুছে ফেলা হচ্ছে…" : "মুছে ফেলুন"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div
